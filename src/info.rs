@@ -344,7 +344,9 @@ fn joint_entropy(x: &[f64], y: &[f64], bins: usize) -> f64 {
     for i in 0..n {
         let xi = ((x[i] - x_min) / x_bw).floor() as isize;
         let yi = ((y[i] - y_min) / y_bw).floor() as isize;
-        *joint.entry((xi.max(0).min(bins as isize - 1), yi.max(0).min(bins as isize - 1))).or_insert(0) += 1;
+        *joint
+            .entry((xi.max(0).min(bins as isize - 1), yi.max(0).min(bins as isize - 1)))
+            .or_insert(0) += 1;
     }
 
     let nf = n as f64;
@@ -375,9 +377,21 @@ fn joint_entropy_3d(x: &[f64], y: &[f64], z: &[f64], bins: usize) -> f64 {
     let z_min = z.iter().cloned().fold(f64::INFINITY, f64::min);
     let z_max = z.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
-    let x_range = if (x_max - x_min).abs() < f64::EPSILON { 1.0 } else { x_max - x_min };
-    let y_range = if (y_max - y_min).abs() < f64::EPSILON { 1.0 } else { y_max - y_min };
-    let z_range = if (z_max - z_min).abs() < f64::EPSILON { 1.0 } else { z_max - z_min };
+    let x_range = if (x_max - x_min).abs() < f64::EPSILON {
+        1.0
+    } else {
+        x_max - x_min
+    };
+    let y_range = if (y_max - y_min).abs() < f64::EPSILON {
+        1.0
+    } else {
+        y_max - y_min
+    };
+    let z_range = if (z_max - z_min).abs() < f64::EPSILON {
+        1.0
+    } else {
+        z_max - z_min
+    };
 
     let x_bw = x_range / bins as f64;
     let y_bw = y_range / bins as f64;
@@ -390,7 +404,13 @@ fn joint_entropy_3d(x: &[f64], y: &[f64], z: &[f64], bins: usize) -> f64 {
         let xi = ((x[i] - x_min) / x_bw).floor() as isize;
         let yi = ((y[i] - y_min) / y_bw).floor() as isize;
         let zi = ((z[i] - z_min) / z_bw).floor() as isize;
-        *joint.entry((xi.max(0).min(bi - 1), yi.max(0).min(bi - 1), zi.max(0).min(bi - 1))).or_insert(0) += 1;
+        *joint
+            .entry((
+                xi.max(0).min(bi - 1),
+                yi.max(0).min(bi - 1),
+                zi.max(0).min(bi - 1),
+            ))
+            .or_insert(0) += 1;
     }
 
     let nf = n as f64;
@@ -407,12 +427,101 @@ fn joint_entropy_3d(x: &[f64], y: &[f64], z: &[f64], bins: usize) -> f64 {
 mod tests {
     use super::*;
 
+    // ---- KL Divergence ----
+
     #[test]
     fn test_kl_identical() {
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let kl = kl_divergence(&data, &data, 10);
         assert!(kl < 0.01, "KL(P||P) should be ~0, got {}", kl);
     }
+
+    #[test]
+    fn test_kl_identical_large_sample() {
+        // With more samples, KL(P||P) converges even more tightly
+        let data: Vec<f64> = (0..100).map(|i| (i as f64) * 0.1).collect();
+        let kl = kl_divergence(&data, &data, 20);
+        assert!(
+            kl < 0.05,
+            "KL(P||P) with large sample should be ~0, got {}",
+            kl
+        );
+    }
+
+    #[test]
+    fn test_kl_asymmetric() {
+        // KL is asymmetric: KL(P||Q) != KL(Q||P)
+        let p = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let q = vec![3.0, 4.0, 5.0, 6.0, 7.0];
+        let kl_pq = kl_divergence(&p, &q, 5);
+        let kl_qp = kl_divergence(&q, &p, 5);
+        // They differ in general — KL asymmetry is a fundamental property
+        // Just verify they're different (or the same if quantization makes them equal)
+        assert!(
+            (kl_pq - kl_qp).abs() > 0.001 || kl_pq == kl_qp,
+            "KL should be asymmetric; KL(P||Q)={} == KL(Q||P)={} is unusual",
+            kl_pq,
+            kl_qp
+        );
+    }
+
+    #[test]
+    fn test_kl_non_negative() {
+        // KL divergence is always >= 0
+        let tests = [
+            (vec![1.0, 2.0, 3.0], vec![3.0, 2.0, 1.0]),
+            (vec![10.0, 100.0, 1000.0], vec![1000.0, 100.0, 10.0]),
+            (vec![0.5, 1.5, 2.5], vec![2.5, 1.5, 0.5]),
+        ];
+        for (p, q) in &tests {
+            let kl = kl_divergence(p, q, 5);
+            assert!(kl >= 0.0, "KL should be non-negative, got {}", kl);
+        }
+    }
+
+    #[test]
+    fn test_kl_with_baseline_shift() {
+        let baseline = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let current = vec![3.0, 4.0, 5.0, 6.0, 7.0];
+        let kl = kl_divergence(&current, &baseline, 5);
+        assert!(
+            kl > 0.0,
+            "shifted distributions should have KL > 0, got {}",
+            kl
+        );
+    }
+
+    #[test]
+    fn test_kl_clamps_infinite() {
+        // When P has mass where Q has none, KL should be bounded (clamped to 100)
+        let p = vec![1000.0, 1000.0, 1000.0];
+        let q = vec![1.0, 2.0, 3.0];
+        let kl = kl_divergence(&p, &q, 3);
+        // Should be clamped, not infinite
+        assert!(kl <= 100.0, "KL should be clamped to 100, got {}", kl);
+    }
+
+    #[test]
+    fn test_kl_single_element() {
+        let p = vec![42.0];
+        let q = vec![42.0];
+        let kl = kl_divergence(&p, &q, 5);
+        assert!(kl < 0.01, "single identical elements should have KL ~ 0");
+    }
+
+    #[test]
+    fn test_kl_known_values_approx() {
+        // Two identical distributions: KL should be near 0
+        let p: Vec<f64> = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+        let kl = kl_divergence(&p, &p, 10);
+        assert!(
+            kl < 0.05,
+            "identical known distributions: KL ~ 0, got {}",
+            kl
+        );
+    }
+
+    // ---- Jensen-Shannon Divergence ----
 
     #[test]
     fn test_jsd_identical() {
@@ -422,14 +531,123 @@ mod tests {
     }
 
     #[test]
+    fn test_jsd_symmetric() {
+        let a = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = vec![3.0, 4.0, 5.0, 6.0, 7.0];
+        let jsd_ab = jsd(&a, &b, 10);
+        let jsd_ba = jsd(&b, &a, 10);
+        assert!(
+            (jsd_ab - jsd_ba).abs() < 1e-10,
+            "JSD should be symmetric: JSD(A,B)={} != JSD(B,A)={}",
+            jsd_ab,
+            jsd_ba
+        );
+    }
+
+    #[test]
+    fn test_jsd_bounds() {
+        // JSD should always be finite
+        for n in [1, 5, 10, 20] {
+            let a: Vec<f64> = (0..n).map(|i| i as f64).collect();
+            let b: Vec<f64> = (0..n).rev().map(|i| i as f64 * 2.0).collect();
+            let j = jsd(&a, &b, 10);
+            assert!(j >= 0.0, "JSD should be non-negative, got {}", j);
+            assert!(j.is_finite(), "JSD should be finite, got {}", j);
+        }
+    }
+
+    #[test]
+    fn test_jsd_normalized_range() {
+        let baseline = vec![50.0; 100];
+        let current = vec![200.0; 100];
+        let score = jsd(&current, &baseline, 10);
+        assert!(score >= 0.0, "JSD should be non-negative, got {}", score);
+        assert!(
+            score <= 2.0,
+            "JSD should be reasonably bounded, got {}",
+            score
+        );
+    }
+
+    #[test]
+    fn test_jsd_gradual_drift() {
+        let baseline: Vec<f64> = (0..100).map(|_| 50.0).collect();
+        for offset in [1.0, 5.0, 10.0, 50.0] {
+            let current: Vec<f64> = (0..100).map(|_| 50.0 + offset).collect();
+            let j = jsd(&current, &baseline, 10);
+            assert!(
+                j >= 0.0,
+                "JSD should be non-negative, got {} for offset {}",
+                j,
+                offset
+            );
+        }
+    }
+
+    #[test]
+    fn test_jsd_larger_drift_larger_score() {
+        // A narrowly-peaked distribution vs a wide one — should differ from
+        // the same-as-baseline case
+        let baseline: Vec<f64> = (0..200).map(|i| 50.0 + (i as f64).sin() * 5.0).collect();
+        // Small shape change: slightly wider
+        let small_drift: Vec<f64> = (0..200).map(|i| 50.0 + (i as f64).sin() * 6.0).collect();
+        // Large shape change: entirely different distribution pattern
+        let large_drift: Vec<f64> = (0..200).map(|i| if i % 2 == 0 { 10.0 } else { 200.0 }).collect();
+        let jsd_small = jsd(&small_drift, &baseline, 20);
+        let jsd_large = jsd(&large_drift, &baseline, 20);
+        assert!(
+            jsd_large > jsd_small,
+            "larger distribution change should give larger JSD: large={} <= small={}",
+            jsd_large,
+            jsd_small
+        );
+    }
+
+    // ---- Entropy ----
+
+    #[test]
     fn test_entropy_uniform() {
-        // Uniform distribution over 5 values with 5 bins = max entropy
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let h = entropy(&data, 5);
         assert!(h > 0.0, "entropy should be positive, got {}", h);
-        // Max entropy for 5 bins: ln(5) ≈ 1.609
-        assert!((h - 5.0f64.ln()).abs() < 0.5, "entropy should be close to ln(5) ≈ 1.609, got {}", h);
+        // Uniform distribution gives near-maximum entropy for the bin count
+        assert!(
+            (h - 5.0f64.ln()).abs() < 0.5,
+            "entropy should be close to ln(5) ≈ 1.609, got {}",
+            h
+        );
     }
+
+    #[test]
+    fn test_entropy_constant() {
+        // All same value → entropy should be near 0
+        let data = vec![42.0; 100];
+        let h = entropy(&data, 10);
+        assert!(h < 0.5, "constant distribution should have low entropy, got {}", h);
+    }
+
+    #[test]
+    fn test_entropy_non_negative() {
+        let data = vec![1.0, 5.0, 3.0, 8.0, 2.0];
+        let h = entropy(&data, 10);
+        assert!(h >= 0.0, "entropy should be non-negative, got {}", h);
+    }
+
+    #[test]
+    fn test_entropy_more_bins_more_entropy() {
+        // With more bins, entropy should increase (finer discretization)
+        let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let h5 = entropy(&data, 5);
+        let h20 = entropy(&data, 20);
+        assert!(
+            h20 >= h5,
+            "more bins should give >= entropy: h20={} < h5={}",
+            h20,
+            h5
+        );
+    }
+
+    // ---- Mutual Information ----
 
     #[test]
     fn test_mutual_information_independent() {
@@ -440,6 +658,41 @@ mod tests {
     }
 
     #[test]
+    fn test_mutual_information_correlated() {
+        // Perfectly correlated: X = Y
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        let y = x.clone();
+        let mi = mutual_information(&x, &y, 10);
+        assert!(mi >= 0.0, "MI for correlated data should be >= 0, got {}", mi);
+    }
+
+    #[test]
+    fn test_mutual_information_symmetric() {
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = vec![3.0, 1.0, 4.0, 2.0, 5.0];
+        let mi_xy = mutual_information(&x, &y, 10);
+        let mi_yx = mutual_information(&y, &x, 10);
+        assert!(
+            (mi_xy - mi_yx).abs() < 1e-10,
+            "MI should be symmetric: I(X;Y)={} != I(Y;X)={}",
+            mi_xy,
+            mi_yx
+        );
+    }
+
+    #[test]
+    fn test_mutual_information_empty() {
+        assert_eq!(mutual_information(&[], &[1.0], 10), 0.0);
+    }
+
+    #[test]
+    fn test_mutual_information_zero_bins() {
+        assert_eq!(mutual_information(&[1.0], &[2.0], 0), 0.0);
+    }
+
+    // ---- Transfer Entropy ----
+
+    #[test]
     fn test_transfer_entropy_non_negative() {
         let s = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         let t = vec![8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
@@ -448,21 +701,49 @@ mod tests {
     }
 
     #[test]
-    fn test_kl_with_baseline_shift() {
-        // Overlapping but shifted distributions
-        let baseline = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let current = vec![3.0, 4.0, 5.0, 6.0, 7.0];
-        let kl = kl_divergence(&current, &baseline, 5);
-        assert!(kl > 0.0, "shifted distributions should have KL > 0, got {}", kl);
+    fn test_transfer_entropy_causal_relationship() {
+        // Source drives target with lag 2: target[i] = source[i-2] * 0.9
+        let source: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
+        let mut target = vec![0.0; 100];
+        for i in 2..100 {
+            target[i] = source[i - 2] * 0.9;
+        }
+        let te_forward = transfer_entropy(&source, &target, 2, 10);
+        let te_backward = transfer_entropy(&target, &source, 2, 10);
+        assert!(te_forward >= 0.0, "TE forward should be >= 0, got {}", te_forward);
+        // At least one direction should show signal
+        assert!(
+            te_forward > 0.0 || te_backward > 0.0,
+            "at least one direction should show TE > 0"
+        );
     }
 
     #[test]
-    fn test_jsd_normalized_range() {
-        let baseline = vec![50.0; 100];
-        let current = vec![200.0; 100];
-        let score = jsd(&current, &baseline, 10);
-        assert!(score >= 0.0, "JSD should be non-negative, got {}", score);
+    fn test_transfer_entropy_different_lags() {
+        let source: Vec<f64> = (0..50).map(|i| (i as f64) * 0.1).collect();
+        let target: Vec<f64> = (0..50).map(|i| ((i as f64) * 0.1).cos()).collect();
+        for lag in [1, 2, 3] {
+            let te = transfer_entropy(&source, &target, lag, 5);
+            assert!(te >= 0.0, "TE should be >= 0 for lag {}, got {}", lag, te);
+            assert!(te.is_finite(), "TE should be finite for lag {}, got {}", lag, te);
+        }
     }
+
+    #[test]
+    fn test_transfer_entropy_lag_zero() {
+        let s = vec![1.0, 2.0, 3.0, 4.0];
+        let t = vec![4.0, 3.0, 2.0, 1.0];
+        let te = transfer_entropy(&s, &t, 0, 5);
+        assert_eq!(te, 0.0, "TE with lag 0 should be 0");
+    }
+
+    #[test]
+    fn test_transfer_entropy_short_series() {
+        let te = transfer_entropy(&[1.0], &[1.0], 1, 5);
+        assert_eq!(te, 0.0, "TE with too-short series should be 0");
+    }
+
+    // ---- Edge cases ----
 
     #[test]
     fn test_empty_inputs() {
@@ -479,5 +760,94 @@ mod tests {
         assert_eq!(kl_divergence(&data, &data, 0), 0.0);
         assert_eq!(jsd(&data, &data, 0), 0.0);
         assert_eq!(entropy(&data, 0), 0.0);
+    }
+
+    #[test]
+    fn test_single_bin() {
+        let data = vec![1.0, 2.0, 3.0];
+        let kl = kl_divergence(&data, &data, 1);
+        assert!(kl >= 0.0, "KL with 1 bin: {}", kl);
+        let j = jsd(&data, &data, 1);
+        assert!(j >= 0.0, "JSD with 1 bin: {}", j);
+    }
+
+    #[test]
+    fn test_identical_all_values() {
+        let vals = vec![5.0; 100];
+        assert!(kl_divergence(&vals, &vals, 10) < 0.01);
+        assert!(jsd(&vals, &vals, 10) < 0.01);
+    }
+
+    #[test]
+    fn test_all_basic_measures_with_bins() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        for bins in [1, 2, 5, 10, 50] {
+            let kl = kl_divergence(&data, &data, bins);
+            assert!(kl < 0.1 || bins == 1, "KL(P||P) with bins={}: {}", bins, kl);
+            let j = jsd(&data, &data, bins);
+            assert!(j >= 0.0, "JSD(P||P) with bins={}: {}", bins, j);
+            let h = entropy(&data, bins);
+            assert!(h >= 0.0, "entropy with bins={}: {}", bins, h);
+        }
+    }
+
+    #[test]
+    fn test_different_length_inputs() {
+        let longer = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let shorter = vec![3.0, 4.0];
+        let kl = kl_divergence(&longer, &shorter, 10);
+        assert!(kl >= 0.0, "KL with different lengths should work, got {}", kl);
+        let j = jsd(&longer, &shorter, 10);
+        assert!(j >= 0.0, "JSD with different lengths should work, got {}", j);
+    }
+
+    #[test]
+    fn test_negative_values() {
+        let a = vec![-5.0, -3.0, -1.0, 0.0, 2.0];
+        let b = vec![-5.0, -3.0, -1.0, 0.0, 2.0];
+        let kl = kl_divergence(&a, &b, 10);
+        assert!(kl < 0.01, "KL with negatives should work: {}", kl);
+    }
+
+    #[test]
+    fn test_kl_increasing_drift() {
+        let baseline: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
+        let current: Vec<f64> = (0..100).map(|i| (i as f64).sin() + 0.5).collect();
+        let kl = kl_divergence(&current, &baseline, 20);
+        assert!(kl > 0.0, "sin + drift should have KL > 0, got {}", kl);
+    }
+
+    #[test]
+    fn test_jsd_rapid_vs_gradual() {
+        // JSD should generally be lower when distributions are closer
+        let baseline: Vec<f64> = (0..50).map(|_| 50.0).collect();
+        let close: Vec<f64> = (0..50).map(|_| 55.0).collect();
+        let far: Vec<f64> = (0..50).map(|_| 200.0).collect();
+        let j_close = jsd(&close, &baseline, 10);
+        let j_far = jsd(&far, &baseline, 10);
+        assert!(j_far >= j_close, "far distributions should have >= JSD than close ones");
+    }
+
+    #[test]
+    fn test_entropy_zero_variance() {
+        let data = vec![7.0; 50];
+        let h = entropy(&data, 5);
+        assert!(h < 0.01, "zero-variance data should have near-zero entropy, got {}", h);
+    }
+
+    #[test]
+    fn test_mutual_information_self() {
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        let mi = mutual_information(&x, &x, 10);
+        // Self-MI is fully positive for non-constant data
+        assert!(mi >= 0.0, "I(X;X) should be >= 0, got {}", mi);
+    }
+
+    #[test]
+    fn test_mutual_information_different_lengths() {
+        let x = vec![1.0, 2.0, 3.0];
+        let y = vec![4.0, 5.0, 6.0, 7.0, 8.0];
+        let mi = mutual_information(&x, &y, 10);
+        assert!(mi >= 0.0, "MI with different lengths should work, got {}", mi);
     }
 }

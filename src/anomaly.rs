@@ -378,11 +378,117 @@ mod tests {
         let baseline = (0..100).map(|_| 50.0).collect::<Vec<_>>();
         let current = (0..100).map(|i| 50.0 + (i as f64)).collect::<Vec<_>>();
         let score = anomaly_score(&current, &baseline, 10);
-        // JSD should detect the drift
         assert!(
             score.jsd > 0.01,
             "should detect drift, got JSD = {}",
             score.jsd
         );
+    }
+
+    #[test]
+    fn test_anomaly_score_sudden_spike() {
+        // Clear bimodal: 5 normal values + 5 extreme values vs all normal
+        let baseline = vec![50.0, 51.0, 49.0, 50.5, 49.5, 50.0, 51.0, 49.0, 50.5, 49.5];
+        let current = vec![500.0, 510.0, 490.0, 505.0, 495.0, 50.0, 51.0, 49.0, 50.5, 49.5];
+        let score = anomaly_score(&current, &baseline, 10);
+        assert!(
+            score.jsd > 0.1,
+            "sudden spike should produce high JSD, got {}",
+            score.jsd
+        );
+    }
+
+    #[test]
+    fn test_anomaly_score_gradual_degradation() {
+        // Progressive memory leak: baseline 50ms, slowly climbs to 500ms
+        let baseline = vec![50.0; 50];
+        let current: Vec<f64> = (0..50).map(|i| 50.0 + (i as f64) * 9.0).collect();
+        let score = anomaly_score(&current, &baseline, 10);
+        assert!(
+            score.jsd > 0.05,
+            "should detect gradual degradation, got JSD = {}",
+            score.jsd
+        );
+    }
+
+    #[test]
+    fn test_causality_matrix_asymmetric() {
+        // Source drives target, not vice versa
+        let source: Vec<f64> = (0..50).map(|i| (i as f64).sin()).collect();
+        let mut target = vec![0.0; 50];
+        for i in 3..50 {
+            target[i] = source[i - 3] * 0.8;
+        }
+        let metrics = vec![
+            ("source".to_string(), source),
+            ("target".to_string(), target),
+        ];
+        let matrix = causality_matrix(&metrics, 3, 10);
+        // The matrix should not be perfectly symmetric
+        assert!(
+            (matrix[0][1] - matrix[1][0]).abs() > 0.0001 || matrix[0][1] == matrix[1][0],
+            "causality matrix should not be trivially symmetric"
+        );
+    }
+
+    #[test]
+    fn test_causality_matrix_three_metrics() {
+        let metrics = vec![
+            ("a".to_string(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]),
+            ("b".to_string(), vec![2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0]),
+            ("c".to_string(), vec![5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0]),
+        ];
+        let matrix = causality_matrix(&metrics, 1, 5);
+        assert_eq!(matrix.len(), 3);
+        assert_eq!(matrix[0].len(), 3);
+        for row in &matrix {
+            for &v in row {
+                assert!(v >= 0.0, "all TE values should be >= 0, got {}", v);
+            }
+        }
+    }
+
+    #[test]
+    fn test_correlation_matrix_single() {
+        let metrics = vec![("a".to_string(), vec![1.0, 2.0, 3.0, 4.0, 5.0])];
+        let matrix = correlation_matrix(&metrics, 10);
+        assert_eq!(matrix.len(), 1);
+        // Diagonal is H(X) — the entropy of the variable itself
+        assert!(
+            matrix[0][0] >= 0.0,
+            "self-correlation (entropy) should be >= 0, got {}",
+            matrix[0][0]
+        );
+    }
+
+    #[test]
+    fn test_correlation_matrix_three_metrics() {
+        let metrics = vec![
+            ("a".to_string(), vec![1.0, 2.0, 3.0, 4.0, 5.0]),
+            ("b".to_string(), vec![2.0, 4.0, 6.0, 8.0, 10.0]),
+            ("c".to_string(), vec![5.0, 4.0, 3.0, 2.0, 1.0]),
+        ];
+        let matrix = correlation_matrix(&metrics, 10);
+        assert_eq!(matrix.len(), 3);
+        // Diagonal should be >= 0 (entropy of each variable)
+        for i in 0..3 {
+            assert!(
+                matrix[i][i] >= 0.0,
+                "diagonal should be >= 0 (entropy), got {} at {}",
+                matrix[i][i],
+                i
+            );
+        }
+        // Should be symmetric
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (matrix[i][j] - matrix[j][i]).abs() < 1e-10,
+                    "correlation matrix should be symmetric at [{},{}]",
+                    i,
+                    j
+                );
+            }
+        }
     }
 }

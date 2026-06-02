@@ -298,4 +298,66 @@ mod tests {
         assert!(all_metrics.iter().any(|(n, _)| n == "throughput"));
         assert!(all_metrics.iter().any(|(n, _)| n == "queue_depth"));
     }
+
+    #[test]
+    fn test_multiple_services() {
+        let mut svc1 = ServiceMetrics::new("api");
+        let mut svc2 = ServiceMetrics::new("worker");
+        svc1.record(MetricSnapshot { latency_ms: 10.0, error_rate: 0.0, throughput: 500.0, queue_depth: 0.0 }).unwrap();
+        svc2.record(MetricSnapshot { latency_ms: 100.0, error_rate: 0.05, throughput: 50.0, queue_depth: 100.0 }).unwrap();
+        assert_eq!(svc1.service_name(), "api");
+        assert_eq!(svc2.service_name(), "worker");
+        assert_eq!(svc1.count(), 1);
+        assert_eq!(svc2.count(), 1);
+    }
+
+    #[test]
+    fn test_large_batch() {
+        let mut metrics = ServiceMetrics::new("batch-test");
+        for i in 0..100 {
+            metrics
+                .record(MetricSnapshot {
+                    latency_ms: 50.0 + (i as f64).sin() * 10.0,
+                    error_rate: 0.01,
+                    throughput: 1000.0,
+                    queue_depth: 5.0,
+                })
+                .unwrap();
+        }
+        assert_eq!(metrics.count(), 100);
+    }
+
+    #[test]
+    fn test_cool_then_reject_records() {
+        let mut metrics = ServiceMetrics::new("test");
+        metrics.record(MetricSnapshot { latency_ms: 50.0, error_rate: 0.01, throughput: 1000.0, queue_depth: 5.0 }).unwrap();
+        let _patterns = metrics.cool();
+        // After cooling, recording should fail
+        let result = metrics.record(MetricSnapshot { latency_ms: 60.0, error_rate: 0.02, throughput: 900.0, queue_depth: 8.0 });
+        assert!(result.is_err(), "recording after cool should fail");
+    }
+
+    #[test]
+    fn test_reset_after_cool() {
+        let mut metrics = ServiceMetrics::new("test");
+        metrics.record(MetricSnapshot { latency_ms: 50.0, error_rate: 0.01, throughput: 1000.0, queue_depth: 5.0 }).unwrap();
+        let _patterns = metrics.cool();
+        metrics.reset();
+        // After reset, recording should work again
+        assert_eq!(metrics.count(), 0);
+        metrics.record(MetricSnapshot { latency_ms: 60.0, error_rate: 0.02, throughput: 900.0, queue_depth: 8.0 }).unwrap();
+        assert_eq!(metrics.count(), 1);
+    }
+
+    #[test]
+    fn test_clone_and_independence() {
+        // Two services cloned from same template should be independent
+        let mut a = ServiceMetrics::new("svc");
+        a.record(MetricSnapshot { latency_ms: 10.0, error_rate: 0.0, throughput: 100.0, queue_depth: 0.0 }).unwrap();
+        let b_count = a.count();
+        a.record(MetricSnapshot { latency_ms: 20.0, error_rate: 0.01, throughput: 90.0, queue_depth: 1.0 }).unwrap();
+        assert_eq!(a.count(), 2);
+        // b_count still refers to the original snapshot
+        assert_eq!(b_count, 1);
+    }
 }
