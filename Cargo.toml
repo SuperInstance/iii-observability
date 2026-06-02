@@ -1,0 +1,14 @@
+[package]
+name = "iii-observability"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Information-theoretic service observability on top of crackle-runtime — KL divergence, JSD, transfer entropy, and mutual information for SRE anomaly detection"
+repository = "https://github.com/SuperInstance/iii-observability"
+keywords = ["observability", "sre", "information-theory", "anomaly-detection", "monitoring"]
+categories = ["algorithms", "science"]
+
+[dependencies]
+crackle-runtime = "0.1"
+
+[dev-dependencies]
